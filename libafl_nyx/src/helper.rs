@@ -1,10 +1,5 @@
-/// [`NyxHelper`] is used to wrap `NyxProcess`
-use std::{fmt::Debug, path::Path};
-
 use libafl::Error;
-use libnyx::NyxProcess;
-
-use crate::settings::NyxSettings;
+use libnyx::{NyxConfig, NyxProcess, NyxProcessRole};
 
 pub struct NyxHelper {
     pub nyx_process: NyxProcess,
@@ -13,71 +8,25 @@ pub struct NyxHelper {
     pub bitmap_buffer: *mut u8,
 }
 
-#[derive(Clone, Copy, Debug)]
-pub enum NyxProcessType {
-    /// stand alone mode
-    ALONE,
-    /// parallel mode's parent, used to create snapshot
-    PARENT,
-    /// parallel mode's child, consume snapshot and execute
-    CHILD,
-}
-
 impl NyxHelper {
-    /// Create [`NyxProcess`] and do basic settings. It will convert the
-    /// instance to a parent or child using `parent_cpu_id` when
-    /// `parallel_mode` is set.
-    pub fn new<P>(share_dir: P, settings: NyxSettings) -> Result<Self, Error>
-    where
-        P: AsRef<Path>,
-    {
-        let work_dir = share_dir.as_ref().join("workdir");
-        let share_dir_str = share_dir.as_ref().to_str().ok_or(Error::illegal_argument(
-            "`share_dir` contains invalid UTF-8",
-        ))?;
-        let work_dir_str = work_dir
-            .to_str()
-            .ok_or(Error::illegal_argument("`work_dir` contains invalid UTF-8"))?;
+    pub fn new(
+        share_dir: &str,
+        cpu_id: usize,
+        parent_cpu_id: Option<usize>,
+        snap_mode: bool,
+    ) -> Result<Self, Error> {
+        let mut nyx_config = NyxConfig::load(share_dir)
+            .map_err(|e| Error::illegal_argument(format!("Failed to load Nyx config: {e}")))?;
+        nyx_config.set_process_role(match parent_cpu_id {
+            None => NyxProcessRole::StandAlone,
+            Some(id) if id == cpu_id => NyxProcessRole::Parent,
+            _ => NyxProcessRole::Child,
+        });
+        nyx_config.set_worker_id(cpu_id);
 
-        let nyx_process_type = match (settings.parallel_mode, settings.parent_cpu_id) {
-            (false, _) => NyxProcessType::ALONE,
-            (true, Some(parent_cpu_id)) if settings.cpu_id == parent_cpu_id => {
-                NyxProcessType::PARENT
-            }
-            (true, Some(_)) => NyxProcessType::CHILD,
-
-            (true, _) => {
-                return Err(Error::illegal_argument(
-                    "`parent_cpu_id` is required in nyx parallel mode",
-                ))
-            }
-        };
-        let mut nyx_process = (match nyx_process_type {
-            NyxProcessType::ALONE => NyxProcess::new(
-                share_dir_str,
-                work_dir_str,
-                settings.cpu_id,
-                settings.input_buffer_size,
-                /* input_buffer_write_protection= */ true,
-            ),
-            NyxProcessType::PARENT => NyxProcess::new_parent(
-                share_dir_str,
-                work_dir_str,
-                settings.cpu_id,
-                settings.input_buffer_size,
-                /* input_buffer_write_protection= */ true,
-            ),
-            NyxProcessType::CHILD => NyxProcess::new_child(
-                share_dir_str,
-                work_dir_str,
-                settings.cpu_id,
-                /* worker_id= */ settings.cpu_id,
-            ),
-        })
-        .map_err(Error::illegal_argument)?;
-
-        nyx_process.option_set_reload_mode(settings.snap_mode);
-        nyx_process.option_set_timeout(settings.timeout_secs, settings.timeout_micro_secs);
+        let mut nyx_process = NyxProcess::new(&mut nyx_config, cpu_id)
+            .map_err(|e| Error::illegal_argument(format!("Failed to create Nyx process: {e}")))?;
+        nyx_process.option_set_reload_mode(snap_mode);
         nyx_process.option_apply();
 
         let bitmap_size = nyx_process.bitmap_buffer_size();
@@ -90,7 +39,7 @@ impl NyxHelper {
         })
     }
 
-    /// Set a timeout for Nyx.
+    /// Change the timeout for Nyx.
     pub fn set_timeout(&mut self, secs: u8, micro_secs: u32) {
         self.nyx_process.option_set_timeout(secs, micro_secs);
         self.nyx_process.option_apply();

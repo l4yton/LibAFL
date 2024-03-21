@@ -77,7 +77,7 @@ where
             }
             NyxReturnValue::IoError => {
                 self.helper.nyx_process.shutdown();
-                Err(Error::unknown("QEMU-nyx died"))
+                Err(Error::unknown("QEMU-Nyx died"))
             }
             NyxReturnValue::Abort => {
                 self.helper.nyx_process.shutdown();
